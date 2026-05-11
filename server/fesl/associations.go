@@ -40,12 +40,14 @@ func handleAddAssociations(s *Session, pkt Packet) ([]byte, error) {
 	assocType := associationType(p)
 	count := atoi(p["addRequests.[]"])
 	ownerID := int64(0)
+	responseOwnerID := int64(0)
 	ownerType := "1"
 	results := []associationResult{}
 
 	for i := 0; i < count; i++ {
 		req := s.parseAssociationRequest(p, "addRequests", i)
 		ownerID = req.ownerID
+		responseOwnerID = req.responseOwnerID
 		ownerType = req.ownerType
 		outcome, reason, err := s.validateAssociationRequest(req, true)
 		if err != nil {
@@ -59,16 +61,17 @@ func handleAddAssociations(s *Session, pkt Packet) ([]byte, error) {
 			s.logAssociationRefusal("AddAssociations", i, assocType, req, reason)
 		}
 		results = append(results, associationResult{
-			requestIndex: i,
-			ownerID:      req.ownerID,
-			ownerType:    req.ownerType,
-			memberID:     req.memberID,
-			memberType:   req.memberType,
-			outcome:      outcome,
+			requestIndex:    i,
+			ownerID:         req.ownerID,
+			responseOwnerID: req.responseOwnerID,
+			ownerType:       req.ownerType,
+			memberID:        req.memberID,
+			memberType:      req.memberType,
+			outcome:         outcome,
 		})
 	}
 
-	return s.associationMutationResponse(pkt, "AddAssociations", "addRequests", p, assocType, ownerID, ownerType, results)
+	return s.associationMutationResponse(pkt, "AddAssociations", "addRequests", p, assocType, ownerID, responseOwnerID, ownerType, results)
 }
 
 func handleDeleteAssociations(s *Session, pkt Packet) ([]byte, error) {
@@ -76,12 +79,14 @@ func handleDeleteAssociations(s *Session, pkt Packet) ([]byte, error) {
 	assocType := associationType(p)
 	count := atoi(p["deleteRequests.[]"])
 	ownerID := int64(0)
+	responseOwnerID := int64(0)
 	ownerType := "1"
 	results := []associationResult{}
 
 	for i := 0; i < count; i++ {
 		req := s.parseAssociationRequest(p, "deleteRequests", i)
 		ownerID = req.ownerID
+		responseOwnerID = req.responseOwnerID
 		ownerType = req.ownerType
 		outcome, reason, err := s.validateAssociationRequest(req, false)
 		if err != nil {
@@ -95,23 +100,27 @@ func handleDeleteAssociations(s *Session, pkt Packet) ([]byte, error) {
 			s.logAssociationRefusal("DeleteAssociations", i, assocType, req, reason)
 		}
 		results = append(results, associationResult{
-			requestIndex: i,
-			ownerID:      req.ownerID,
-			ownerType:    req.ownerType,
-			memberID:     req.memberID,
-			memberType:   req.memberType,
-			outcome:      outcome,
+			requestIndex:    i,
+			ownerID:         req.ownerID,
+			responseOwnerID: req.responseOwnerID,
+			ownerType:       req.ownerType,
+			memberID:        req.memberID,
+			memberType:      req.memberType,
+			outcome:         outcome,
 		})
 	}
 
-	return s.associationMutationResponse(pkt, "DeleteAssociations", "deleteRequests", p, assocType, ownerID, ownerType, results)
+	return s.associationMutationResponse(pkt, "DeleteAssociations", "deleteRequests", p, assocType, ownerID, responseOwnerID, ownerType, results)
 }
 
-func (s *Session) associationMutationResponse(pkt Packet, txn string, requestPrefix string, p map[string]string, assocType string, ownerID int64, ownerType string, results []associationResult) ([]byte, error) {
+func (s *Session) associationMutationResponse(pkt Packet, txn string, requestPrefix string, p map[string]string, assocType string, ownerID int64, responseOwnerID int64, ownerType string, results []associationResult) ([]byte, error) {
 	if ownerID == 0 {
 		ownerID = s.personaID
 	}
-	resp := baseAssociationResponse(txn, p, assocType, itoa64(ownerID), ownerType)
+	if responseOwnerID == 0 {
+		responseOwnerID = ownerID
+	}
+	resp := baseAssociationResponse(txn, p, assocType, itoa64(responseOwnerID), ownerType)
 	resp = append(resp, KV{Key: "result.[]", Value: strconv.Itoa(len(results))})
 	for i, result := range results {
 		if err := s.emitAssociationResult(&resp, p, requestPrefix, i, result, assocType); err != nil {
@@ -159,10 +168,10 @@ func (s *Session) emitAssociationResult(resp *[]KV, p map[string]string, request
 
 	prefix := fmt.Sprintf("result.%d", resultIndex)
 	*resp = append(*resp,
-		KV{Key: prefix + ".owner.id", Value: itoa64(result.ownerID)},
+		KV{Key: prefix + ".owner.id", Value: itoa64(result.responseOwnerID)},
 		KV{Key: prefix + ".owner.type", Value: result.ownerType},
 		KV{Key: prefix + ".owner.name", Value: ownerName},
-		KV{Key: prefix + ".owner.xuid", Value: itoa64(result.ownerID)},
+		KV{Key: prefix + ".owner.xuid", Value: itoa64(result.responseOwnerID)},
 		KV{Key: prefix + ".member.id", Value: itoa64(result.memberID)},
 		KV{Key: prefix + ".member.type", Value: result.memberType},
 		KV{Key: prefix + ".member.name", Value: memberName},
@@ -188,20 +197,22 @@ type memberRow struct {
 }
 
 type associationRequest struct {
-	requestIndex int
-	ownerID      int64
-	ownerType    string
-	memberID     int64
-	memberType   string
+	requestIndex    int
+	ownerID         int64
+	responseOwnerID int64
+	ownerType       string
+	memberID        int64
+	memberType      string
 }
 
 type associationResult struct {
-	requestIndex int
-	ownerID      int64
-	ownerType    string
-	memberID     int64
-	memberType   string
-	outcome      string
+	requestIndex    int
+	ownerID         int64
+	responseOwnerID int64
+	ownerType       string
+	memberID        int64
+	memberType      string
+	outcome         string
 }
 
 func baseAssociationResponse(txn string, p map[string]string, assocType string, ownerID string, ownerType string) []KV {
@@ -232,17 +243,29 @@ func associationType(p map[string]string) string {
 }
 
 func (s *Session) parseAssociationRequest(p map[string]string, requestPrefix string, index int) associationRequest {
-	ownerID := int64(atoi(p[fmt.Sprintf("%s.%d.owner.id", requestPrefix, index)]))
-	if ownerID == 0 {
-		ownerID = s.personaID
+	responseOwnerID := int64(atoi(p[fmt.Sprintf("%s.%d.owner.id", requestPrefix, index)]))
+	ownerID := s.normalizeAssociationOwnerID(responseOwnerID)
+	if responseOwnerID == 0 {
+		responseOwnerID = ownerID
 	}
 	return associationRequest{
-		requestIndex: index,
-		ownerID:      ownerID,
-		ownerType:    withDefault(p[fmt.Sprintf("%s.%d.owner.type", requestPrefix, index)], "1"),
-		memberID:     int64(atoi(p[fmt.Sprintf("%s.%d.member.id", requestPrefix, index)])),
-		memberType:   withDefault(p[fmt.Sprintf("%s.%d.member.type", requestPrefix, index)], "1"),
+		requestIndex:    index,
+		ownerID:         ownerID,
+		responseOwnerID: responseOwnerID,
+		ownerType:       withDefault(p[fmt.Sprintf("%s.%d.owner.type", requestPrefix, index)], "1"),
+		memberID:        int64(atoi(p[fmt.Sprintf("%s.%d.member.id", requestPrefix, index)])),
+		memberType:      withDefault(p[fmt.Sprintf("%s.%d.member.type", requestPrefix, index)], "1"),
 	}
+}
+
+func (s *Session) normalizeAssociationOwnerID(ownerID int64) int64 {
+	if ownerID == 0 {
+		return s.personaID
+	}
+	if s.personaID != 0 && s.accountID != 0 && ownerID == s.accountID {
+		return s.personaID
+	}
+	return ownerID
 }
 
 func (s *Session) validateAssociationRequest(req associationRequest, rejectSelf bool) (string, string, error) {
