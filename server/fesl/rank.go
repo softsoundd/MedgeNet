@@ -16,9 +16,10 @@ func handleGetStats(s *Session, pkt Packet) ([]byte, error) {
 	owner := int64(atoi(p["owner"]))
 	periodID := atoi(p["periodId"])
 	keys := parseKeyList(p, "keys")
-	personaID := owner
-	if personaID == 0 {
-		personaID = s.personaID
+	personaID := s.rankLookupPersonaID(owner)
+	responseOwnerID := owner
+	if responseOwnerID == 0 {
+		responseOwnerID = personaID
 	}
 
 	stats := map[string]float64{}
@@ -34,13 +35,18 @@ func handleGetStats(s *Session, pkt Packet) ([]byte, error) {
 		}
 	}
 
+	rankValue, err := statGroupRankValue(s.server.store, personaID, keys, periodID)
+	if err != nil {
+		return nil, err
+	}
 	resp := kvs(
 		"TXN", "GetStats",
-		"ownerId", itoa64(owner),
+		"ownerId", itoa64(responseOwnerID),
 		"ownerType", withDefault(p["ownerType"], "1"),
+		"owner", itoa64(responseOwnerID),
 		"stats.[]", strconv.Itoa(len(keys)),
 	)
-	emitStatGroupFlat(&resp, "stats.", stats, keys, "0")
+	emitStatGroupFlat(&resp, "stats.", stats, keys, rankValue)
 	return Encode("rank", pkt.ID, resp), nil
 }
 
@@ -49,16 +55,19 @@ func handleGetRankedStats(s *Session, pkt Packet) ([]byte, error) {
 	owner := int64(atoi(p["owner"]))
 	periodID := atoi(p["periodId"])
 	keys := parseKeyList(p, "keys")
-	personaID := owner
-	if personaID == 0 {
-		personaID = s.personaID
+	personaID := s.rankLookupPersonaID(owner)
+	responseOwnerID := owner
+	if responseOwnerID == 0 {
+		responseOwnerID = personaID
 	}
 
 	resp := kvs(
 		"TXN", "GetRankedStats",
-		"ownerId", itoa64(owner),
+		"ownerId", itoa64(responseOwnerID),
 		"ownerType", withDefault(p["ownerType"], "1"),
+		"owner", itoa64(responseOwnerID),
 		"rankedStats.[]", strconv.Itoa(len(keys)),
+		"stats.[]", strconv.Itoa(len(keys)),
 	)
 	for i, key := range keys {
 		ranked := zeroRanked(key)
@@ -83,6 +92,13 @@ func handleGetRankedStats(s *Session, pkt Packet) ([]byte, error) {
 			KV{Key: prefix + ".value", Value: fmtFloat(ranked.Value)},
 			KV{Key: prefix + ".text", Value: fmtFloat(ranked.Value)},
 			KV{Key: prefix + ".rank", Value: strconv.Itoa(ranked.Rank)},
+		)
+		statsPrefix := fmt.Sprintf("stats.%d", i)
+		resp = append(resp,
+			KV{Key: statsPrefix + ".key", Value: key},
+			KV{Key: statsPrefix + ".value", Value: fmtFloat(ranked.Value)},
+			KV{Key: statsPrefix + ".text", Value: fmtFloat(ranked.Value)},
+			KV{Key: statsPrefix + ".rank", Value: strconv.Itoa(ranked.Rank)},
 		)
 	}
 	return Encode("rank", pkt.ID, resp), nil
@@ -303,13 +319,18 @@ func handleGetStatsForOwners(s *Session, pkt Packet) ([]byte, error) {
 	keys := parseKeyList(p, "keys")
 	resp := kvs("TXN", "GetStatsForOwners", "stats.[]", strconv.Itoa(len(owners)))
 	for i, owner := range owners {
+		lookupID := s.rankLookupPersonaID(owner.id)
 		var stats map[string]float64
 		var err error
-		if storage.IsHistoricalOwner(owner.id) {
-			stats, err = s.server.store.HistoricalStats(owner.id, keys, periodID)
+		if storage.IsHistoricalOwner(lookupID) {
+			stats, err = s.server.store.HistoricalStats(lookupID, keys, periodID)
 		} else {
-			stats, err = s.server.store.GetStats(owner.id, keys, periodID)
+			stats, err = s.server.store.GetStats(lookupID, keys, periodID)
 		}
+		if err != nil {
+			return nil, err
+		}
+		rankValue, err := statGroupRankValue(s.server.store, lookupID, keys, periodID)
 		if err != nil {
 			return nil, err
 		}
@@ -317,8 +338,10 @@ func handleGetStatsForOwners(s *Session, pkt Packet) ([]byte, error) {
 		resp = append(resp,
 			KV{Key: prefix + ".ownerId", Value: itoa64(owner.id)},
 			KV{Key: prefix + ".ownerType", Value: owner.typ},
+			KV{Key: prefix + ".owner", Value: itoa64(owner.id)},
+			KV{Key: prefix + ".rank", Value: rankValue},
 		)
-		emitStatGroupFlat(&resp, prefix+".stats.", stats, keys, "0")
+		emitStatGroupFlat(&resp, prefix+".stats.", stats, keys, rankValue)
 	}
 	encoded := Encode("rank", pkt.ID, resp)
 	s.log(fmt.Sprintf("GetStatsForOwners detail: owners=%d period=%d requestedKeys=%d returnedRows=%d bytes=%d", len(owners), periodID, len(keys), len(owners), len(encoded)))
@@ -332,19 +355,21 @@ func handleGetRankedStatsForOwners(s *Session, pkt Packet) ([]byte, error) {
 	keys := parseKeyList(p, "keys")
 	resp := kvs("TXN", "GetRankedStatsForOwners", "rankedStats.[]", strconv.Itoa(len(owners)))
 	for i, owner := range owners {
+		lookupID := s.rankLookupPersonaID(owner.id)
 		prefix := fmt.Sprintf("rankedStats.%d", i)
 		resp = append(resp,
 			KV{Key: prefix + ".ownerId", Value: itoa64(owner.id)},
 			KV{Key: prefix + ".ownerType", Value: owner.typ},
+			KV{Key: prefix + ".owner", Value: itoa64(owner.id)},
 			KV{Key: prefix + ".rankedStats.[]", Value: strconv.Itoa(len(keys))},
 		)
 		for j, key := range keys {
 			var ranked storage.RankedStat
 			var err error
-			if storage.IsHistoricalOwner(owner.id) {
-				ranked, err = s.server.store.HistoricalRankedStats(owner.id, key, periodID)
+			if storage.IsHistoricalOwner(lookupID) {
+				ranked, err = s.server.store.HistoricalRankedStats(lookupID, key, periodID)
 			} else {
-				ranked, err = s.server.store.RankedStats(owner.id, key, periodID)
+				ranked, err = s.server.store.RankedStats(lookupID, key, periodID)
 			}
 			if err != nil {
 				return nil, err
@@ -433,6 +458,46 @@ func leaderboardKeys(sortKey string, requested []string) []string {
 
 func zeroRanked(key string) storage.RankedStat {
 	return storage.RankedStat{Rank: 0, Value: defaultForKey(key)}
+}
+
+func (s *Session) rankLookupPersonaID(ownerID int64) int64 {
+	if ownerID == 0 {
+		return s.personaID
+	}
+	if s.personaID != 0 && s.accountID != 0 && ownerID == s.accountID {
+		return s.personaID
+	}
+	return ownerID
+}
+
+func statGroupRankValue(store *storage.Store, ownerID int64, keys []string, periodID int) (string, error) {
+	key := primaryTimeKey(keys)
+	if ownerID == 0 || key == "" {
+		return "0", nil
+	}
+	var ranked storage.RankedStat
+	var err error
+	if storage.IsHistoricalOwner(ownerID) {
+		ranked, err = store.HistoricalRankedStats(ownerID, key, periodID)
+	} else {
+		ranked, err = store.RankedStats(ownerID, key, periodID)
+	}
+	if err != nil {
+		return "", err
+	}
+	if ranked.Value == 0 {
+		return "0", nil
+	}
+	return strconv.Itoa(ranked.Rank), nil
+}
+
+func primaryTimeKey(keys []string) string {
+	for _, key := range keys {
+		if strings.HasSuffix(key, "_20") {
+			return key
+		}
+	}
+	return ""
 }
 
 func fmtFloat(value float64) string {

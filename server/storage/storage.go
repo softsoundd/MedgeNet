@@ -333,8 +333,12 @@ func (s *Store) GetStats(personaID int64, keys []string, periodID int) (map[stri
 	if len(keys) == 0 {
 		return out, nil
 	}
+	effectivePersonaID, err := s.bestPersonaIDForKeys(personaID, keys, periodID)
+	if err != nil {
+		return nil, err
+	}
 	placeholders := strings.TrimRight(strings.Repeat("?,", len(keys)), ",")
-	args := []any{personaID, periodID}
+	args := []any{effectivePersonaID, periodID}
 	for _, key := range keys {
 		args = append(args, key)
 	}
@@ -373,8 +377,12 @@ DO UPDATE SET value = excluded.value, updated_at = CURRENT_TIMESTAMP
 }
 
 func (s *Store) RankedStats(personaID int64, key string, periodID int) (RankedStat, error) {
+	effectivePersonaID, err := s.bestPersonaIDForKey(personaID, key, periodID)
+	if err != nil {
+		return RankedStat{}, err
+	}
 	dateClause, cutoff := periodDateClause(periodID)
-	args := []any{personaID, key, periodID}
+	args := []any{effectivePersonaID, key, periodID}
 	if cutoff != "" {
 		args = append(args, cutoff)
 	}
@@ -385,15 +393,50 @@ func (s *Store) RankedStats(personaID int64, key string, periodID int) (RankedSt
 		}
 		return RankedStat{}, err
 	}
-	var rank int
-	rankArgs := []any{key, periodID, value}
-	if cutoff != "" {
-		rankArgs = append(rankArgs, cutoff)
-	}
-	if err := s.db.QueryRow("SELECT COUNT(*) FROM stats WHERE key = ? AND period_id = ? AND value > 0 AND value <= ?"+dateClause, rankArgs...).Scan(&rank); err != nil {
+	rank, err := s.rankForValue(key, periodID, value)
+	if err != nil {
 		return RankedStat{}, err
 	}
-	return RankedStat{Rank: int(math.Max(float64(rank), 1)), Value: value}, nil
+	return RankedStat{Rank: rank, Value: value}, nil
+}
+
+func (s *Store) bestPersonaIDForKeys(personaID int64, keys []string, periodID int) (int64, error) {
+	for _, key := range keys {
+		if strings.HasSuffix(key, "_20") {
+			return s.bestPersonaIDForKey(personaID, key, periodID)
+		}
+	}
+	return personaID, nil
+}
+
+func (s *Store) bestPersonaIDForKey(personaID int64, key string, periodID int) (int64, error) {
+	if personaID == 0 || !strings.HasSuffix(key, "_20") {
+		return personaID, nil
+	}
+	persona, err := s.PersonaByID(personaID)
+	if err != nil || persona == nil {
+		return personaID, err
+	}
+	dateClause, cutoff := periodDateClauseFor(periodID, "st.updated_at")
+	args := []any{persona.Name, key, periodID}
+	if cutoff != "" {
+		args = append(args, cutoff)
+	}
+	var bestPersonaID int64
+	err = s.db.QueryRow(`
+SELECT p.id
+FROM personas p
+JOIN stats st ON st.persona_id = p.id
+WHERE p.name = ? AND st.key = ? AND st.period_id = ? AND st.value > 0`+dateClause+`
+ORDER BY st.value ASC
+LIMIT 1`, args...).Scan(&bestPersonaID)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return personaID, nil
+		}
+		return personaID, err
+	}
+	return bestPersonaID, nil
 }
 
 func (s *Store) TopN(key string, minRank int, maxRank int, extraKeys []string, periodID int) ([]TopEntry, error) {
@@ -440,7 +483,13 @@ LIMIT ? OFFSET ?
 			entry.PersonaName = SanitizeHistoricalName(entry.PersonaName)
 		}
 		entry.Values[key] = value
-		extra, err := s.GetStats(entry.PersonaID, extraKeys, periodID)
+		var extra map[string]float64
+		var err error
+		if entry.Imported {
+			extra, err = s.HistoricalStats(entry.PersonaID, extraKeys, periodID)
+		} else {
+			extra, err = s.GetStats(entry.PersonaID, extraKeys, periodID)
+		}
 		if err != nil {
 			return nil, err
 		}
@@ -526,7 +575,15 @@ func (s *Store) HistoricalRankedStats(ownerID int64, key string, periodID int) (
 		return RankedStat{}, err
 	}
 
-	liveDateClause, _ := periodDateClauseFor(periodID, "updated_at")
+	rank, err := s.rankForValue(key, periodID, value)
+	if err != nil {
+		return RankedStat{}, err
+	}
+	return RankedStat{Rank: rank, Value: value}, nil
+}
+
+func (s *Store) rankForValue(key string, periodID int, value float64) (int, error) {
+	liveDateClause, cutoff := periodDateClauseFor(periodID, "updated_at")
 	historicalDateClause, _ := periodDateClauseFor(periodID, "updated_at")
 	rankArgs := []any{key, periodID, value}
 	if cutoff != "" {
@@ -543,9 +600,9 @@ SELECT value FROM stats WHERE key = ? AND period_id = ? AND value > 0 AND value 
 UNION ALL
 SELECT value FROM historical_runs WHERE key = ? AND period_id = ? AND value > 0 AND value <= ?`+historicalDateClause+`
 )`, rankArgs...).Scan(&rank); err != nil {
-		return RankedStat{}, err
+		return 0, err
 	}
-	return RankedStat{Rank: int(math.Max(float64(rank), 1)), Value: value}, nil
+	return int(math.Max(float64(rank), 1)), nil
 }
 
 func (s *Store) AddHistoricalRun(sourceKey string, name string, stretchID int, key string, value float64, periodID int, runID string, weblink string, updatedAt string) error {
