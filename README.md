@@ -1,4 +1,4 @@
-# MedgeNet
+# MedgeNet — Mirror's Edge Online Restoration
 
 <img width="1508" height="134" alt="MedgeNetLogoHigh" src="https://github.com/user-attachments/assets/005731fd-5c14-48aa-bebd-77ea57697472" />
 
