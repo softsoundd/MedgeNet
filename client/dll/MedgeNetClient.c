@@ -6,6 +6,7 @@
 
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
+#include "../MedgeNetVersion.h"
 
 #pragma comment(lib, "kernel32.lib")
 int _fltused = 0;
@@ -665,6 +666,83 @@ static int write_jump_patch(unsigned long addr, void *target, unsigned int patch
     return patch_bytes(addr, patch, patch_len);
 }
 
+static unsigned int cstr_len(const char *s)
+{
+    const char *p = s;
+    while (*p) p++;
+    return (unsigned int)(p - s);
+}
+
+static unsigned long module_image_size(void)
+{
+    unsigned char *base = (unsigned char *)GetModuleHandleA(NULL);
+    IMAGE_DOS_HEADER *dos;
+    IMAGE_NT_HEADERS *nt;
+
+    if (!base || IsBadReadPtr(base, sizeof(IMAGE_DOS_HEADER)))
+        return 0;
+
+    dos = (IMAGE_DOS_HEADER *)base;
+    if (dos->e_magic != IMAGE_DOS_SIGNATURE)
+        return 0;
+
+    nt = (IMAGE_NT_HEADERS *)(base + dos->e_lfanew);
+    if (IsBadReadPtr(nt, sizeof(IMAGE_NT_HEADERS)) ||
+        nt->Signature != IMAGE_NT_SIGNATURE)
+        return 0;
+
+    return nt->OptionalHeader.SizeOfImage;
+}
+
+static unsigned long find_module_pattern(const unsigned char *pattern, const char *mask)
+{
+    unsigned char *base = (unsigned char *)GetModuleHandleA(NULL);
+    unsigned long size = module_image_size();
+    unsigned int len = cstr_len(mask);
+    unsigned long i;
+
+    if (!base || size == 0 || len == 0 || size < len)
+        return 0;
+
+    for (i = 0; i <= size - len; i++) {
+        unsigned int j;
+        for (j = 0; j < len; j++) {
+            if (mask[j] == 'x' && base[i + j] != pattern[j])
+                break;
+        }
+        if (j == len)
+            return (unsigned long)(base + i);
+    }
+    return 0;
+}
+
+static int install_trampoline_raw(unsigned long addr, unsigned int stolen_len,
+                                  unsigned char *trampoline, void *detour)
+{
+    DWORD old;
+    unsigned int i;
+    long rel;
+
+    if (!addr || stolen_len < 5 || stolen_len > 24)
+        return 0;
+
+    for (i = 0; i < stolen_len; i++)
+        trampoline[i] = ((unsigned char *)addr)[i];
+
+    trampoline[stolen_len] = 0xE9;
+    rel = (long)((addr + stolen_len) - ((unsigned long)&trampoline[stolen_len] + 5));
+    trampoline[stolen_len + 1] = (unsigned char)(rel & 0xFF);
+    trampoline[stolen_len + 2] = (unsigned char)((rel >> 8) & 0xFF);
+    trampoline[stolen_len + 3] = (unsigned char)((rel >> 16) & 0xFF);
+    trampoline[stolen_len + 4] = (unsigned char)((rel >> 24) & 0xFF);
+
+    if (!VirtualProtect((void *)trampoline, stolen_len + 5,
+                        PAGE_EXECUTE_READWRITE, &old))
+        return 0;
+
+    return write_jump_patch(addr, detour, stolen_len);
+}
+
 static int install_trampoline(unsigned long addr, const unsigned char *expect,
                               unsigned int stolen_len, unsigned char *trampoline,
                               void *detour)
@@ -691,6 +769,316 @@ static int install_trampoline(unsigned long addr, const unsigned char *expect,
         return 0;
 
     return write_jump_patch(addr, detour, stolen_len);
+}
+
+static void log_reopen(void);
+
+/* --- UE3 RestartLevel race fix -------------------------------------- */
+
+#define UE_OBJECT_OUTER_OFFSET       0x28
+#define UE_OBJECT_NAME_OFFSET        0x2C
+#define UE_OBJECT_CLASS_OFFSET       0x34
+#define UE_ACTOR_WORLDINFO_OFFSET    0x9C
+#define UE_WORLDINFO_GAME_OFFSET     0x0CC4
+#define UE_FNAME_ENTRY_WIDE_OFFSET   0x10
+#define UE_PROCESS_EVENT_STOLEN_LEN  13
+#define UE_MAX_OBJECT_SCAN           500000
+
+typedef struct UEArray {
+    void *data;
+    int count;
+    int max;
+} UEArray;
+
+typedef struct UEFName {
+    int index;
+    int number;
+} UEFName;
+
+typedef struct UEObject UEObject;
+typedef struct UEFunction UEFunction;
+
+static UEArray *g_ue_names;
+static UEArray *g_ue_objects;
+static UEFunction *g_ue_fn_restart_level;
+static UEFunction *g_ue_fn_restart_race;
+static unsigned char g_process_event_trampoline[32];
+static unsigned long g_process_event_trampoline_addr;
+static volatile LONG g_restart_fix_in_process_event;
+static volatile unsigned long g_restart_fix_intercepts;
+static volatile unsigned long g_restart_fix_function_resolves;
+static volatile unsigned long g_restart_fix_resolve_attempts;
+
+static int call_original_process_event(UEObject *object, UEFunction *function,
+                                       void *params, void *result)
+{
+    int ret_value;
+    __asm {
+        mov  ecx, object
+        push result
+        push params
+        push function
+        call dword ptr [g_process_event_trampoline_addr]
+        mov  ret_value, eax
+    }
+    return ret_value;
+}
+
+static int ue_array_valid(UEArray *array)
+{
+    if (!array || IsBadReadPtr(array, sizeof(UEArray)))
+        return 0;
+    if (array->count < 0 || array->count > UE_MAX_OBJECT_SCAN)
+        return 0;
+    if (array->max < array->count)
+        return 0;
+    if (array->count > 0 && (!array->data || IsBadReadPtr(array->data, array->count * 4)))
+        return 0;
+    return 1;
+}
+
+static void *ue_object_field(UEObject *object, unsigned long offset)
+{
+    if (!object || IsBadReadPtr((void *)((unsigned char *)object + offset), 4))
+        return 0;
+    return *(void **)((unsigned char *)object + offset);
+}
+
+static UEFName *ue_object_fname(UEObject *object)
+{
+    if (!object || IsBadReadPtr((void *)((unsigned char *)object + UE_OBJECT_NAME_OFFSET), sizeof(UEFName)))
+        return 0;
+    return (UEFName *)((unsigned char *)object + UE_OBJECT_NAME_OFFSET);
+}
+
+static int ue_wide_name_equals_ascii(const wchar_t *wide, const char *ascii)
+{
+    if (!wide || !ascii || IsBadReadPtr(wide, sizeof(wchar_t)))
+        return 0;
+
+    while (*ascii) {
+        if (IsBadReadPtr(wide, sizeof(wchar_t)))
+            return 0;
+        if (*wide != (wchar_t)*ascii)
+            return 0;
+        wide++;
+        ascii++;
+    }
+
+    if (IsBadReadPtr(wide, sizeof(wchar_t)))
+        return 0;
+    return *wide == 0;
+}
+
+static int ue_fname_equals_ascii(UEFName *name, const char *ascii)
+{
+    void **names_data;
+    void *entry;
+    wchar_t *wide_name;
+
+    if (!ue_array_valid(g_ue_names) || !name || name->index < 0 ||
+        name->index >= g_ue_names->count)
+        return 0;
+
+    names_data = (void **)g_ue_names->data;
+    entry = names_data[name->index];
+    if (!entry || IsBadReadPtr(entry, UE_FNAME_ENTRY_WIDE_OFFSET + sizeof(wchar_t)))
+        return 0;
+
+    wide_name = (wchar_t *)((unsigned char *)entry + UE_FNAME_ENTRY_WIDE_OFFSET);
+    return ue_wide_name_equals_ascii(wide_name, ascii);
+}
+
+static int ue_object_name_equals(UEObject *object, const char *name)
+{
+    UEFName *fname = ue_object_fname(object);
+    return fname && ue_fname_equals_ascii(fname, name);
+}
+
+static int ue_object_class_name_equals(UEObject *object, const char *class_name)
+{
+    UEObject *class_object = (UEObject *)ue_object_field(object, UE_OBJECT_CLASS_OFFSET);
+    return class_object && ue_object_name_equals(class_object, class_name);
+}
+
+static UEObject *ue_object_outer(UEObject *object)
+{
+    return (UEObject *)ue_object_field(object, UE_OBJECT_OUTER_OFFSET);
+}
+
+static UEFunction *ue_find_function(const char *package_name,
+                                    const char *class_name,
+                                    const char *function_name)
+{
+    void **objects_data;
+    int i;
+
+    if (!ue_array_valid(g_ue_objects))
+        return 0;
+
+    objects_data = (void **)g_ue_objects->data;
+    for (i = 0; i < g_ue_objects->count; i++) {
+        UEObject *object = (UEObject *)objects_data[i];
+        UEObject *outer_class;
+        UEObject *outer_package;
+
+        if (!object || IsBadReadPtr(object, UE_OBJECT_CLASS_OFFSET + 4))
+            continue;
+        if (!ue_object_class_name_equals(object, "Function"))
+            continue;
+        if (!ue_object_name_equals(object, function_name))
+            continue;
+
+        outer_class = ue_object_outer(object);
+        outer_package = ue_object_outer(outer_class);
+        if (!outer_class || !outer_package)
+            continue;
+        if (!ue_object_name_equals(outer_class, class_name))
+            continue;
+        if (!ue_object_name_equals(outer_package, package_name))
+            continue;
+
+        return (UEFunction *)object;
+    }
+    return 0;
+}
+
+static int ue_resolve_restart_functions(void)
+{
+    if ((!g_ue_fn_restart_level || !g_ue_fn_restart_race) &&
+        g_restart_fix_resolve_attempts > 0 &&
+        (g_restart_fix_resolve_attempts & 0xFF) != 0)
+    {
+        g_restart_fix_resolve_attempts++;
+        return 0;
+    }
+
+    g_restart_fix_resolve_attempts++;
+
+    if (!g_ue_fn_restart_level)
+        g_ue_fn_restart_level =
+            ue_find_function("Engine", "PlayerController", "RestartLevel");
+    if (!g_ue_fn_restart_race)
+        g_ue_fn_restart_race =
+            ue_find_function("TdGame", "TdSPLevelRace", "RestartRace");
+
+    if (g_ue_fn_restart_level && g_ue_fn_restart_race) {
+        if (g_restart_fix_function_resolves == 0)
+            g_restart_fix_function_resolves = 1;
+        return 1;
+    }
+    return 0;
+}
+
+static UEObject *ue_current_level_race_game(UEObject *controller)
+{
+    UEObject *world;
+    UEObject *game;
+
+    if (!controller ||
+        IsBadReadPtr((void *)((unsigned char *)controller + UE_ACTOR_WORLDINFO_OFFSET), 4))
+        return 0;
+
+    world = *(UEObject **)((unsigned char *)controller + UE_ACTOR_WORLDINFO_OFFSET);
+    if (!world ||
+        IsBadReadPtr((void *)((unsigned char *)world + UE_WORLDINFO_GAME_OFFSET), 4))
+        return 0;
+
+    game = *(UEObject **)((unsigned char *)world + UE_WORLDINFO_GAME_OFFSET);
+    if (!game || !ue_object_class_name_equals(game, "TdSPLevelRace"))
+        return 0;
+
+    return game;
+}
+
+static void log_restart_fix_first_intercept(void)
+{
+    log_reopen();
+    log_str("[OK]   RestartLevel redirected to TdSPLevelRace.RestartRace\r\n");
+    log_close();
+}
+
+static int __fastcall detour_ProcessEvent(UEObject *object, void *edx,
+                                          UEFunction *function,
+                                          void *params, void *result)
+{
+    UEObject *race_game;
+    unsigned char empty_params[4] = { 0, 0, 0, 0 };
+    int ret_value;
+
+    (void)edx;
+
+    if (InterlockedCompareExchange(&g_restart_fix_in_process_event, 1, 0) == 0)
+    {
+        if (ue_resolve_restart_functions() && function == g_ue_fn_restart_level) {
+            race_game = ue_current_level_race_game(object);
+            if (race_game) {
+                g_restart_fix_intercepts++;
+                if (g_restart_fix_intercepts == 1)
+                    log_restart_fix_first_intercept();
+
+                ret_value = call_original_process_event(
+                    race_game, g_ue_fn_restart_race, empty_params, result);
+                InterlockedExchange(&g_restart_fix_in_process_event, 0);
+                return ret_value;
+            }
+        }
+        InterlockedExchange(&g_restart_fix_in_process_event, 0);
+    }
+
+    return call_original_process_event(object, function, params, result);
+}
+
+static int install_restartlevel_race_fix(void)
+{
+    unsigned long gnames_site;
+    unsigned long gobjects_site;
+    unsigned long process_event_site;
+
+    gnames_site = find_module_pattern(
+        (const unsigned char *)"\x8B\x0D\x00\x00\x00\x00\x8B\x84\x24\x00\x00\x00\x00\x8B\x04\x81",
+        "xx????xxx????xxx");
+    if (!gnames_site) {
+        log_line("[SKIP] ", "RestartLevel race fix GNames pattern", 0);
+        return 0;
+    }
+    g_ue_names = *(UEArray **)(gnames_site + 2);
+
+    gobjects_site = find_module_pattern(
+        (const unsigned char *)"\x8B\x15\x00\x00\x00\x00\x8B\x0C\xB2\x8D\x44\x24\x30",
+        "xx????xxxxxxx");
+    if (!gobjects_site) {
+        log_line("[SKIP] ", "RestartLevel race fix GObjects pattern", 0);
+        return 0;
+    }
+    g_ue_objects = *(UEArray **)(gobjects_site + 2);
+
+    if (!ue_array_valid(g_ue_names) || !ue_array_valid(g_ue_objects)) {
+        log_line("[SKIP] ", "RestartLevel race fix reflection globals", 0);
+        return 0;
+    }
+
+    process_event_site = find_module_pattern(
+        (const unsigned char *)"\x56\x8B\xF1\x8B\x0D\x00\x00\x00\x00\x85\xC9\x74\x09",
+        "xxxxx????xxxx");
+    if (!process_event_site) {
+        log_line("[SKIP] ", "RestartLevel race fix ProcessEvent pattern", 0);
+        return 0;
+    }
+
+    if (!install_trampoline_raw(process_event_site, UE_PROCESS_EVENT_STOLEN_LEN,
+                                g_process_event_trampoline, detour_ProcessEvent)) {
+        log_line("[FAIL] ", "Hook ProcessEvent for RestartLevel race fix",
+                 process_event_site);
+        return 0;
+    }
+    g_process_event_trampoline_addr = (unsigned long)&g_process_event_trampoline[0];
+
+    log_str("[OK]   Hook ProcessEvent for RestartLevel race fix @ ");
+    log_hex(process_event_site);
+    log_str("\r\n");
+    ue_resolve_restart_functions();
+    return 1;
 }
 
 /* ── Config ────────────────────────────────────────────────────────── */
@@ -1273,6 +1661,8 @@ static void apply_patches(void)
                  "Capture ProcessTick", profile->process_tick);
     }
 
+    install_restartlevel_race_fix();
+
     /* Patch 7: Hook FeslConnection::Tick vtable to call ProcessTick
      * during loading, replacing the paused UE3 tick loop.
      */
@@ -1313,6 +1703,8 @@ static void probe_txn_pointers(void)
     log_str(" max_stale="); log_hex(g_pt_max_stale);
     log_str(" calls_stale="); log_hex(g_pt_calls_as_stale);
     log_str(" captured_ecx="); log_hex(g_process_tick_ecx);
+    log_str(" restart_resolved="); log_hex(g_restart_fix_function_resolves);
+    log_str(" restart_intercepts="); log_hex(g_restart_fix_intercepts);
     log_str("\r\n");
     log_close();
 }
@@ -1378,7 +1770,9 @@ BOOL WINAPI DllMain(HINSTANCE hinstDLL, DWORD fdwReason, LPVOID lpvReserved)
         read_config();
         log_open();
 
-        log_str("MedgeNet Client\r\nServer: ");
+        log_str("MedgeNet Client ");
+        log_str(MEDGENET_VERSION_STRING);
+        log_str("\r\nServer: ");
         log_str(g_host);
         log_str(":");
         log_dec_ulong((unsigned long)g_port);

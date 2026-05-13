@@ -5,10 +5,28 @@
       <UniqueIdentifier>{C6F0C606-A5E8-4CB0-9D86-8F49EA8F8D0B}</UniqueIdentifier>
       <Extensions>c;cpp;cxx;cc</Extensions>
     </Filter>
+    <Filter Include="Header Files">
+      <UniqueIdentifier>{68D66D48-6C2D-4A4D-98AF-4B3446747640}</UniqueIdentifier>
+      <Extensions>h;hpp;hxx</Extensions>
+    </Filter>
+    <Filter Include="Resource Files">
+      <UniqueIdentifier>{8F2B2019-4F83-4E3C-BF0A-58D2B8D3B8D4}</UniqueIdentifier>
+      <Extensions>rc</Extensions>
+    </Filter>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="MedgeNetClient.c">
       <Filter>Source Files</Filter>
     </ClCompile>
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="..\MedgeNetVersion.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+  </ItemGroup>
+  <ItemGroup>
+    <ResourceCompile Include="MedgeNetClient.rc">
+      <Filter>Resource Files</Filter>
+    </ResourceCompile>
   </ItemGroup>
 </Project>

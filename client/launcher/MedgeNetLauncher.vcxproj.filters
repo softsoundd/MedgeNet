@@ -9,6 +9,10 @@
       <UniqueIdentifier>{D9B242FE-7E03-4C97-8925-45096A618A18}</UniqueIdentifier>
       <Extensions>rc;ico;png</Extensions>
     </Filter>
+    <Filter Include="Header Files">
+      <UniqueIdentifier>{980C5D99-B582-4A4D-A8E5-A3C031C1350A}</UniqueIdentifier>
+      <Extensions>h;hpp;hxx</Extensions>
+    </Filter>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="MedgeNetLauncher.cpp">
@@ -27,5 +31,10 @@
     <Image Include="..\MedgeNetLogoHigh.png">
       <Filter>Resource Files</Filter>
     </Image>
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="..\MedgeNetVersion.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
   </ItemGroup>
 </Project>

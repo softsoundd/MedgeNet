@@ -111,6 +111,9 @@
     <Image Include="..\MedgeNetIcon.ico" />
     <Image Include="..\MedgeNetLogoHigh.png" />
   </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="..\MedgeNetVersion.h" />
+  </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets" />
 </Project>

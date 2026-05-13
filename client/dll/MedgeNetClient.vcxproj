@@ -91,6 +91,12 @@
   <ItemGroup>
     <ClCompile Include="MedgeNetClient.c" />
   </ItemGroup>
+  <ItemGroup>
+    <ResourceCompile Include="MedgeNetClient.rc" />
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="..\MedgeNetVersion.h" />
+  </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets" />
 </Project>

@@ -1,9 +1,6 @@
 #include <windows.h>
 #include "../MedgeNetVersion.h"
 
-101 ICON "MedgeNetIcon.ico"
-2001 RCDATA "MedgeNetLogoHigh.png"
-
 VS_VERSION_INFO VERSIONINFO
  FILEVERSION MEDGENET_VERSION_VALUE
  PRODUCTVERSION MEDGENET_VERSION_VALUE
@@ -14,7 +11,7 @@ VS_VERSION_INFO VERSIONINFO
  FILEFLAGS 0
 #endif
  FILEOS VOS_NT_WINDOWS32
- FILETYPE VFT_APP
+ FILETYPE VFT_DLL
  FILESUBTYPE 0
 BEGIN
     BLOCK "StringFileInfo"
@@ -22,10 +19,10 @@ BEGIN
         BLOCK "040904B0"
         BEGIN
             VALUE "CompanyName", "MedgeNet"
-            VALUE "FileDescription", "MedgeNet Launcher"
+            VALUE "FileDescription", "MedgeNet Client DLL"
             VALUE "FileVersion", MEDGENET_VERSION_STRING
-            VALUE "InternalName", "MedgeNetLauncher.exe"
-            VALUE "OriginalFilename", "MedgeNetLauncher.exe"
+            VALUE "InternalName", "MedgeNetClient.dll"
+            VALUE "OriginalFilename", "MedgeNetClient.dll"
             VALUE "ProductName", "MedgeNet"
             VALUE "ProductVersion", MEDGENET_VERSION_STRING
         END
