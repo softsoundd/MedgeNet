@@ -17,9 +17,12 @@ Disclaimer: MedgeNet is not affiliated with or endorsed by Electronic Arts.
 
 ## Features
 
+Full 1:1 replication of original online behaviour is implemented:
 - Account and persona creation (for each server).
-- Time Trial and Speed Run leaderboard support (custom maps not supported at this stage).
+- Time Trial and Speed Run leaderboard support.
 - Ghost upload, listing, download, and playback support.
+
+Support for custom maps or additional behaviour is currently out of scope.
 
 ## Requirements
 
