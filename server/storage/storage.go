@@ -60,6 +60,22 @@ type TopEntry struct {
 	Rank        int
 	Values      map[string]float64
 	Imported    bool
+	TimeOnly    bool
+}
+
+type HistoricalPlayer struct {
+	ID        int64
+	SourceKey string
+	Name      string
+	RunCount  int
+}
+
+type HistoricalAccountLink struct {
+	SourceKey      string
+	HistoricalName string
+	PersonaID      int64
+	PersonaName    string
+	RunCount       int
 }
 
 type Store struct {
@@ -136,7 +152,59 @@ CREATE TABLE IF NOT EXISTS historical_runs (
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     PRIMARY KEY (player_id, key, period_id)
 );
+CREATE TABLE IF NOT EXISTS historical_account_links (
+    source_key TEXT PRIMARY KEY,
+    persona_id INTEGER NOT NULL REFERENCES personas(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_historical_account_links_persona ON historical_account_links(persona_id);
 `)
+	if err != nil {
+		return err
+	}
+	return s.migrateHistoricalAccountLinks()
+}
+
+func (s *Store) migrateHistoricalAccountLinks() error {
+	rows, err := s.db.Query("PRAGMA table_info(historical_account_links)")
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+
+	hasVerificationColumns := false
+	for rows.Next() {
+		var cid int
+		var name string
+		var typ string
+		var notNull int
+		var defaultValue sql.NullString
+		var pk int
+		if err := rows.Scan(&cid, &name, &typ, &notNull, &defaultValue, &pk); err != nil {
+			return err
+		}
+		if name == "verified_by" || name == "verified_at" {
+			hasVerificationColumns = true
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	if !hasVerificationColumns {
+		return nil
+	}
+
+	_, err = s.db.Exec(`
+BEGIN;
+CREATE TABLE historical_account_links_new (
+    source_key TEXT PRIMARY KEY,
+    persona_id INTEGER NOT NULL REFERENCES personas(id) ON DELETE CASCADE
+);
+INSERT OR REPLACE INTO historical_account_links_new (source_key, persona_id)
+SELECT source_key, persona_id FROM historical_account_links;
+DROP TABLE historical_account_links;
+ALTER TABLE historical_account_links_new RENAME TO historical_account_links;
+CREATE INDEX IF NOT EXISTS idx_historical_account_links_persona ON historical_account_links(persona_id);
+COMMIT;`)
 	return err
 }
 
@@ -256,7 +324,7 @@ func (s *Store) Personas(accountID int64) ([]Persona, error) {
 		return nil, err
 	}
 	defer rows.Close()
-	var personas []Persona
+	personas := []Persona{}
 	for rows.Next() {
 		var persona Persona
 		if err := rows.Scan(&persona.ID, &persona.AccountID, &persona.Name, &persona.CreatedAt); err != nil {
@@ -328,6 +396,128 @@ func (s *Store) LookupPersonaByName(name string) (*Persona, error) {
 	return &persona, nil
 }
 
+func (s *Store) SearchPersonas(query string) ([]Persona, error) {
+	pattern := "%" + query + "%"
+	rows, err := s.db.Query(`
+SELECT id, account_id, name, created_at
+FROM personas
+WHERE name LIKE ?
+ORDER BY name COLLATE NOCASE
+LIMIT 25`, pattern)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var personas []Persona
+	for rows.Next() {
+		var persona Persona
+		if err := rows.Scan(&persona.ID, &persona.AccountID, &persona.Name, &persona.CreatedAt); err != nil {
+			return nil, err
+		}
+		personas = append(personas, persona)
+	}
+	return personas, rows.Err()
+}
+
+func (s *Store) HistoricalPlayers(query string) ([]HistoricalPlayer, error) {
+	pattern := "%" + query + "%"
+	rows, err := s.db.Query(`
+SELECT hp.id, hp.source_key, hp.name, COUNT(hr.key) AS run_count
+FROM historical_players hp
+LEFT JOIN historical_runs hr ON hr.player_id = hp.id
+WHERE ? = '' OR hp.name LIKE ? OR hp.source_key LIKE ?
+GROUP BY hp.id, hp.source_key, hp.name
+ORDER BY hp.name COLLATE NOCASE
+LIMIT 50`, query, pattern, pattern)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	players := []HistoricalPlayer{}
+	for rows.Next() {
+		var player HistoricalPlayer
+		if err := rows.Scan(&player.ID, &player.SourceKey, &player.Name, &player.RunCount); err != nil {
+			return nil, err
+		}
+		players = append(players, player)
+	}
+	return players, rows.Err()
+}
+
+func (s *Store) HistoricalAccountLinks() ([]HistoricalAccountLink, error) {
+	rows, err := s.db.Query(`
+SELECT l.source_key, COALESCE(hp.name, ''), p.id, p.name, COUNT(hr.key) AS run_count
+FROM historical_account_links l
+JOIN personas p ON p.id = l.persona_id
+LEFT JOIN historical_players hp ON hp.source_key = l.source_key
+LEFT JOIN historical_runs hr ON hr.player_id = hp.id
+GROUP BY l.source_key, hp.name, p.id, p.name
+ORDER BY p.name COLLATE NOCASE, l.source_key`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	links := []HistoricalAccountLink{}
+	for rows.Next() {
+		var link HistoricalAccountLink
+		if err := rows.Scan(&link.SourceKey, &link.HistoricalName, &link.PersonaID, &link.PersonaName, &link.RunCount); err != nil {
+			return nil, err
+		}
+		links = append(links, link)
+	}
+	return links, rows.Err()
+}
+
+func (s *Store) HistoricalLinkCandidates() ([]HistoricalAccountLink, error) {
+	rows, err := s.db.Query(`
+SELECT hp.source_key, hp.name, p.id, p.name, COUNT(hr.key) AS run_count
+FROM historical_players hp
+JOIN personas p ON lower(p.name) = lower(hp.name)
+LEFT JOIN historical_account_links l ON l.source_key = hp.source_key
+LEFT JOIN historical_runs hr ON hr.player_id = hp.id
+WHERE l.source_key IS NULL
+GROUP BY hp.source_key, hp.name, p.id, p.name
+ORDER BY p.name COLLATE NOCASE, hp.source_key`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	links := []HistoricalAccountLink{}
+	for rows.Next() {
+		var link HistoricalAccountLink
+		if err := rows.Scan(&link.SourceKey, &link.HistoricalName, &link.PersonaID, &link.PersonaName, &link.RunCount); err != nil {
+			return nil, err
+		}
+		links = append(links, link)
+	}
+	return links, rows.Err()
+}
+
+func (s *Store) LinkHistoricalAccount(sourceKey string, personaID int64) error {
+	persona, err := s.PersonaByID(personaID)
+	if err != nil {
+		return err
+	}
+	if persona == nil {
+		return sql.ErrNoRows
+	}
+	var one int
+	if err := s.db.QueryRow("SELECT 1 FROM historical_players WHERE source_key = ?", sourceKey).Scan(&one); err != nil {
+		return err
+	}
+	_, err = s.db.Exec(`
+INSERT INTO historical_account_links (source_key, persona_id)
+VALUES (?, ?)
+ON CONFLICT(source_key) DO UPDATE SET
+    persona_id = excluded.persona_id`, sourceKey, personaID)
+	return err
+}
+
+func (s *Store) UnlinkHistoricalAccount(sourceKey string) error {
+	_, err := s.db.Exec("DELETE FROM historical_account_links WHERE source_key = ?", sourceKey)
+	return err
+}
+
 func (s *Store) GetStats(personaID int64, keys []string, periodID int) (map[string]float64, error) {
 	out := map[string]float64{}
 	if len(keys) == 0 {
@@ -359,7 +549,19 @@ func (s *Store) GetStats(personaID int64, keys []string, periodID int) (map[stri
 		}
 		out[key] = value
 	}
-	return out, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	linked, err := s.linkedHistoricalStats(effectivePersonaID, keys, periodID)
+	if err != nil {
+		return nil, err
+	}
+	for key, value := range linked {
+		if current, ok := out[key]; !ok || value < current {
+			out[key] = value
+		}
+	}
+	return out, nil
 }
 
 func (s *Store) UpdateStats(personaID int64, values map[string]float64, periodID int) error {
@@ -387,17 +589,85 @@ func (s *Store) RankedStats(personaID int64, key string, periodID int) (RankedSt
 		args = append(args, cutoff)
 	}
 	var value float64
+	hasValue := false
 	if err := s.db.QueryRow("SELECT value FROM stats WHERE persona_id = ? AND key = ? AND period_id = ?"+dateClause, args...).Scan(&value); err != nil {
-		if err == sql.ErrNoRows {
-			return RankedStat{}, nil
+		if err != sql.ErrNoRows {
+			return RankedStat{}, err
 		}
-		return RankedStat{}, err
+	} else {
+		hasValue = true
+	}
+	if strings.HasSuffix(key, "_20") {
+		linked, err := s.linkedHistoricalTime(effectivePersonaID, key, periodID)
+		if err != nil {
+			return RankedStat{}, err
+		}
+		if linked > 0 && (!hasValue || linked < value) {
+			value = linked
+			hasValue = true
+		}
+	}
+	if !hasValue {
+		return RankedStat{}, nil
 	}
 	rank, err := s.rankForValue(key, periodID, value)
 	if err != nil {
 		return RankedStat{}, err
 	}
 	return RankedStat{Rank: rank, Value: value}, nil
+}
+
+func (s *Store) linkedHistoricalStats(personaID int64, keys []string, periodID int) (map[string]float64, error) {
+	out := map[string]float64{}
+	if personaID == 0 || len(keys) == 0 {
+		return out, nil
+	}
+	timeKeys := make([]string, 0, len(keys))
+	for _, key := range keys {
+		if strings.HasSuffix(key, "_20") {
+			timeKeys = append(timeKeys, key)
+		}
+	}
+	if len(timeKeys) == 0 {
+		return out, nil
+	}
+	placeholders := strings.TrimRight(strings.Repeat("?,", len(timeKeys)), ",")
+	args := []any{personaID, periodID}
+	for _, key := range timeKeys {
+		args = append(args, key)
+	}
+	dateClause, cutoff := periodDateClauseFor(periodID, "hr.updated_at")
+	if cutoff != "" {
+		args = append(args, cutoff)
+	}
+	rows, err := s.db.Query(fmt.Sprintf(`
+SELECT hr.key, MIN(hr.value)
+FROM historical_account_links l
+JOIN historical_players hp ON hp.source_key = l.source_key
+JOIN historical_runs hr ON hr.player_id = hp.id
+WHERE l.persona_id = ? AND hr.period_id = ? AND hr.key IN (%s) AND hr.value > 0`+dateClause+`
+GROUP BY hr.key`, placeholders), args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var key string
+		var value float64
+		if err := rows.Scan(&key, &value); err != nil {
+			return nil, err
+		}
+		out[key] = value
+	}
+	return out, rows.Err()
+}
+
+func (s *Store) linkedHistoricalTime(personaID int64, key string, periodID int) (float64, error) {
+	stats, err := s.linkedHistoricalStats(personaID, []string{key}, periodID)
+	if err != nil {
+		return 0, err
+	}
+	return stats[key], nil
 }
 
 func (s *Store) bestPersonaIDForKeys(personaID int64, keys []string, periodID int) (int64, error) {
@@ -452,19 +722,38 @@ func (s *Store) TopN(key string, minRank int, maxRank int, extraKeys []string, p
 	if cutoff != "" {
 		args = append(args, cutoff)
 	}
+	args = append(args, key, periodID)
+	if cutoff != "" {
+		args = append(args, cutoff)
+	}
 	args = append(args, limit, offset)
 	rows, err := s.db.Query(`
-SELECT owner_id, name, value, imported FROM (
-SELECT s.persona_id AS owner_id, p.name AS name, s.value AS value, 0 AS imported
+WITH candidates AS (
+SELECT s.persona_id AS owner_id, p.name AS name, s.value AS value, 0 AS imported, 0 AS time_only
 FROM stats s
 JOIN personas p ON p.id = s.persona_id
 WHERE s.key = ? AND s.period_id = ? AND s.value > 0`+liveDateClause+`
 UNION ALL
-SELECT hp.id + `+strconv.FormatInt(HistoricalOwnerOffset, 10)+` AS owner_id, hp.name AS name, hr.value AS value, 1 AS imported
+SELECT p.id AS owner_id, p.name AS name, hr.value AS value, 0 AS imported, 1 AS time_only
 FROM historical_runs hr
 JOIN historical_players hp ON hp.id = hr.player_id
+JOIN historical_account_links l ON l.source_key = hp.source_key
+JOIN personas p ON p.id = l.persona_id
 WHERE hr.key = ? AND hr.period_id = ? AND hr.value > 0`+historicalDateClause+`
+UNION ALL
+SELECT hp.id + `+strconv.FormatInt(HistoricalOwnerOffset, 10)+` AS owner_id, hp.name AS name, hr.value AS value, 1 AS imported, 1 AS time_only
+FROM historical_runs hr
+JOIN historical_players hp ON hp.id = hr.player_id
+LEFT JOIN historical_account_links l ON l.source_key = hp.source_key
+WHERE l.source_key IS NULL AND hr.key = ? AND hr.period_id = ? AND hr.value > 0`+historicalDateClause+`
+), best AS (
+SELECT owner_id, name, value, imported, time_only,
+       ROW_NUMBER() OVER (PARTITION BY owner_id ORDER BY value ASC, time_only ASC) AS rn
+FROM candidates
 )
+SELECT owner_id, name, value, imported, time_only
+FROM best
+WHERE rn = 1
 ORDER BY value ASC
 LIMIT ? OFFSET ?
 `, args...)
@@ -476,7 +765,7 @@ LIMIT ? OFFSET ?
 	for i := 0; rows.Next(); i++ {
 		entry := TopEntry{Rank: offset + i + 1, Values: map[string]float64{}}
 		var value float64
-		if err := rows.Scan(&entry.PersonaID, &entry.PersonaName, &value, &entry.Imported); err != nil {
+		if err := rows.Scan(&entry.PersonaID, &entry.PersonaName, &value, &entry.Imported, &entry.TimeOnly); err != nil {
 			return nil, err
 		}
 		if entry.Imported {
@@ -487,6 +776,8 @@ LIMIT ? OFFSET ?
 		var err error
 		if entry.Imported {
 			extra, err = s.HistoricalStats(entry.PersonaID, extraKeys, periodID)
+		} else if entry.TimeOnly {
+			extra = map[string]float64{}
 		} else {
 			extra, err = s.GetStats(entry.PersonaID, extraKeys, periodID)
 		}
@@ -494,6 +785,9 @@ LIMIT ? OFFSET ?
 			return nil, err
 		}
 		for k, v := range extra {
+			if k == key {
+				continue
+			}
 			entry.Values[k] = v
 		}
 		entries = append(entries, entry)
@@ -593,13 +887,34 @@ func (s *Store) rankForValue(key string, periodID int, value float64) (int, erro
 	if cutoff != "" {
 		rankArgs = append(rankArgs, cutoff)
 	}
+	rankArgs = append(rankArgs, key, periodID, value)
+	if cutoff != "" {
+		rankArgs = append(rankArgs, cutoff)
+	}
 	var rank int
 	if err := s.db.QueryRow(`
-SELECT COUNT(*) FROM (
-SELECT value FROM stats WHERE key = ? AND period_id = ? AND value > 0 AND value <= ?`+liveDateClause+`
+WITH candidates AS (
+SELECT persona_id AS owner_id, value, 0 AS time_only
+FROM stats
+WHERE key = ? AND period_id = ? AND value > 0 AND value <= ?`+liveDateClause+`
 UNION ALL
-SELECT value FROM historical_runs WHERE key = ? AND period_id = ? AND value > 0 AND value <= ?`+historicalDateClause+`
-)`, rankArgs...).Scan(&rank); err != nil {
+SELECT l.persona_id AS owner_id, hr.value, 1 AS time_only
+FROM historical_runs hr
+JOIN historical_players hp ON hp.id = hr.player_id
+JOIN historical_account_links l ON l.source_key = hp.source_key
+WHERE hr.key = ? AND hr.period_id = ? AND hr.value > 0 AND hr.value <= ?`+historicalDateClause+`
+UNION ALL
+SELECT hp.id + `+strconv.FormatInt(HistoricalOwnerOffset, 10)+` AS owner_id, hr.value, 1 AS time_only
+FROM historical_runs hr
+JOIN historical_players hp ON hp.id = hr.player_id
+LEFT JOIN historical_account_links l ON l.source_key = hp.source_key
+WHERE l.source_key IS NULL AND hr.key = ? AND hr.period_id = ? AND hr.value > 0 AND hr.value <= ?`+historicalDateClause+`
+), best AS (
+SELECT owner_id, value,
+       ROW_NUMBER() OVER (PARTITION BY owner_id ORDER BY value ASC, time_only ASC) AS rn
+FROM candidates
+)
+SELECT COUNT(*) FROM best WHERE rn = 1`, rankArgs...).Scan(&rank); err != nil {
 		return 0, err
 	}
 	return int(math.Max(float64(rank), 1)), nil

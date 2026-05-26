@@ -178,6 +178,8 @@ func topNRowSummary(entries []storage.TopEntry) string {
 		source := "live"
 		if entry.Imported {
 			source = "hist"
+		} else if entry.TimeOnly {
+			source = "linked-hist"
 		}
 		parts = append(parts, fmt.Sprintf("%d:%s:%s", entry.Rank, source, entry.PersonaName))
 	}
@@ -299,7 +301,7 @@ func emitStatGroupFlatForEntry(resp *[]KV, prefix string, entry storage.TopEntry
 			value = defaultForKey(key)
 		}
 		text := fmtFloat(value)
-		if entry.Imported && !ok && !strings.HasSuffix(key, "_20") {
+		if (entry.Imported || entry.TimeOnly) && !ok && !strings.HasSuffix(key, "_20") {
 			text = ""
 		}
 		statPrefix := fmt.Sprintf("%s%d", prefix, i)
