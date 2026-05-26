@@ -2,8 +2,6 @@
 
 <img alt="MedgeNetLogoHigh" src="client/MedgeNetLogoHigh.png" />
 
-&nbsp;
-
 MedgeNet is a project that restores online features for Mirror's
 Edge (2009) on PC. It includes a Go server and a Windows launcher that redirects
 the game to a custom server instead of the retired EA services.
