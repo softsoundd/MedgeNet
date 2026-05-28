@@ -1,0 +1,12 @@
+dist/
+*.exe
+*.test
+coverage.out
+coverage.html
+server.ini
+*.db
+*.db-*
+*.sqlite
+*.sqlite3
+*.log
+ghosts/

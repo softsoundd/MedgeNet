@@ -34,8 +34,10 @@ Server build:
 
 - Go 1.25 or newer.
 - Administrator/root access if binding HTTP to port `80`.
+- Alternatively, Docker or another OCI-compatible runtime for the Linux container image. On
+  Windows, use Docker Desktop with Linux containers/WSL 2.
 
-## Project Layout
+## Project layout
 
 ```text
 client/
@@ -47,12 +49,11 @@ client/
 server/
   main.go                 Go server entry point
   server.example.ini      Example server configuration
-  build_windows.ps1       Windows build helper
   config/ fesl/ locker/   Server packages
   mlog/ storage/
 ```
 
-## Build The Server
+## Build the server
 
 From the `server` directory:
 
@@ -74,7 +75,27 @@ By default the server listens on:
 Runtime data such as the SQLite database, logs and uploaded ghosts are created
 beside the running server.
 
-## Build The Client
+## Run the server with Docker
+
+The server can also run as a Linux/OCI container. From the repository root:
+
+```powershell
+docker compose up -d --build
+```
+
+It builds `server/Dockerfile` and stores runtime data in the `medgenet-data` Docker volume:
+
+- `/data/me_server.db` - SQLite accounts, personas, leaderboards, metadata.
+- `/data/me_server.db-shm` and `/data/me_server.db-wal` - SQLite WAL files.
+- `/data/ghosts` - uploaded ghost files.
+- `/data/session_*.log` - server logs.
+
+By default the container exposes the same public ports as the non-Docker server:
+
+- FESL: host `18680` -> container `18680`
+- HTTP/FileLocker: host `80` -> container `8080`
+
+## Build the client
 
 ```text
 client\MedgeNetClient.sln
@@ -113,7 +134,10 @@ server's HTTP/FileLocker port.
 
 1. Start the MedgeNet server.
 2. Start `MedgeNetLauncher.exe` as Administrator.
-3. Select a local or custom server in the launcher.
+3. Select a local or custom server in the launcher. The [release builds](https://github.com/softsoundd/MedgeNet/releases)
+in this repo are configured to connect to the "main" MedgeNet server
+(associated with the [Medge Discord community](https://discord.gg/3tbaHJg)) which includes
+[speedrun.com](https://www.speedrun.com/me) level runs in the in-game leaderboards.
 4. Launch Mirror's Edge.
 5. Leave the launcher open while playing so it can patch the game process.
 

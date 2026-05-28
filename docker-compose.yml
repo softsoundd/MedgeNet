@@ -1,0 +1,26 @@
+services:
+  server:
+    build:
+      context: ./server
+    image: medgenet-server:local
+    restart: unless-stopped
+    ports:
+      - "18680:18680/tcp"
+      - "80:8080/tcp"
+    environment:
+      MEDGENET_BIND_HOST: 0.0.0.0
+      MEDGENET_FESL_PORT: 18680
+      MEDGENET_HTTP_PORT: 8080
+      MEDGENET_DB_PATH: /data/me_server.db
+      MEDGENET_GHOST_DIR: /data/ghosts
+      MEDGENET_LOG_PATH: /data/session.log
+    volumes:
+      - medgenet-data:/data
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8080/healthz >/dev/null || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+volumes:
+  medgenet-data:
