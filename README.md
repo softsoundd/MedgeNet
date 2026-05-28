@@ -22,7 +22,20 @@ Full 1:1 replication of original online behaviour is implemented:
 
 Support for custom maps or additional behaviour is currently out of scope.
 
-## Requirements
+## Running MedgeNet
+
+1. Start `MedgeNetLauncher.exe` as Administrator.
+2. Select a local or custom server in the launcher. The [release builds](https://github.com/softsoundd/MedgeNet/releases)
+in this repo are already configured to connect to the "main" MedgeNet server
+(associated with the [Medge Discord community](https://discord.gg/3tbaHJg)) which includes
+[speedrun.com](https://www.speedrun.com/me) level runs in the in-game leaderboards.
+    - Alternatively, start the MedgeNet server if running your own instance.
+4. Launch Mirror's Edge.
+5. Leave the launcher open while playing so it can patch the game process.
+
+The client log is written beside `MedgeNetClient.dll`.
+
+## Build requirements
 
 Client build:
 
@@ -129,17 +142,3 @@ HTTPPort=80
 Use `127.0.0.1` for a server running on the same PC. For a public or LAN server,
 set `Host` to that server's hostname or IP address. `HTTPPort` must match the
 server's HTTP/FileLocker port.
-
-## Use
-
-1. Start the MedgeNet server.
-2. Start `MedgeNetLauncher.exe` as Administrator.
-3. Select a local or custom server in the launcher. The [release builds](https://github.com/softsoundd/MedgeNet/releases)
-in this repo are configured to connect to the "main" MedgeNet server
-(associated with the [Medge Discord community](https://discord.gg/3tbaHJg)) which includes
-[speedrun.com](https://www.speedrun.com/me) level runs in the in-game leaderboards.
-4. Launch Mirror's Edge.
-5. Leave the launcher open while playing so it can patch the game process.
-
-The client log is written beside `MedgeNetClient.dll`.
-
