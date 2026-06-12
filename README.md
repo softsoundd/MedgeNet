@@ -11,7 +11,13 @@ This repository contains the release source for:
 - `client/` - the Windows launcher and injected client DLL.
 - `server/` - the Go server for accounts, leaderboards, and ghosts.
 
-Disclaimer: MedgeNet is not affiliated with or endorsed by Electronic Arts.
+> [!NOTE]
+> MedgeNet is not affiliated with or endorsed by Electronic Arts.
+
+[![Ko-fi](https://img.shields.io/badge/support_me_on_ko--fi-F16061?style=for-the-badge&logo=kofi&logoColor=f5f5f5)](https://ko-fi.com/softsoundd)
+
+If you like what I do and would like to support my work, please consider visiting my Ko-fi page.
+Donations help cover the costs of running the main MedgeNet server.
 
 ## Features
 
