@@ -28,11 +28,11 @@ Full 1:1 replication of original online behaviour is implemented:
 
 Support for custom maps or additional behaviour is currently out of scope.
 
-## Running MedgeNet
+## Using MedgeNet
 
 1. Start `MedgeNetLauncher.exe` as Administrator.
 2. Select a local or custom server in the launcher. The [release builds](https://github.com/softsoundd/MedgeNet/releases)
-in this repo are already configured to connect to the "main" MedgeNet server
+in this repo are pre-configured to connect to the "main" MedgeNet server
 (associated with the [Medge Discord community](https://discord.gg/3tbaHJg)) which includes
 [speedrun.com](https://www.speedrun.com/me) level runs in the in-game leaderboards.
     - Alternatively, start the MedgeNet server if running your own instance.
