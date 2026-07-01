@@ -41,6 +41,10 @@ in this repo are pre-configured to connect to the "main" MedgeNet server
 
 The client log is written beside `MedgeNetClient.dll`.
 
+**Optional but recommended:** The [release builds](https://github.com/softsoundd/MedgeNet/releases) also include the `MedgeNet Game UI Files` folder.
+This contains modified localisation files that remove "EA" wording and unecessary fields in the account creation scene.
+Copy the contents of this folder across to `<path-to-game>\TdGame` (overwrite the files).
+
 ## Build requirements
 
 Client build:
