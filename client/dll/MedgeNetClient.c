@@ -566,6 +566,105 @@ static int same_sha256(const unsigned char *a, const unsigned char *b)
     return 1;
 }
 
+/* ── File Pattern Scanning ─────────────────────────────────────────── */
+
+static int memmem_search(const unsigned char *buf, unsigned int buf_len,
+                         const unsigned char *pat, unsigned int pat_len)
+{
+    unsigned int i;
+    if (pat_len == 0 || buf_len < pat_len)
+        return -1;
+    for (i = 0; i <= (unsigned int)(buf_len - pat_len); i++) {
+        unsigned int j;
+        for (j = 0; j < pat_len; j++) {
+            if (buf[i + j] != pat[j])
+                break;
+        }
+        if (j == pat_len)
+            return (int)i;
+    }
+    return -1;
+}
+
+static const MedgeNetExeProfile *find_profile_by_pattern(const char *exe_path)
+{
+    unsigned char overlap[8];
+    unsigned int  overlap_size = 0;
+    unsigned char search_buf[1032];
+    HANDLE file;
+    DWORD read_count;
+    unsigned long file_size;
+    int found_gog = 0;
+    int found_retail = 0;
+    int found_dlc = 0;
+    unsigned int i;
+
+    file = CreateFileA(exe_path, GENERIC_READ,
+                       FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                       NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+    if (file == INVALID_HANDLE_VALUE)
+        return NULL;
+
+    file_size = GetFileSize(file, NULL);
+
+    while (!(found_gog || found_retail || found_dlc)) {
+        unsigned int search_len = 0;
+
+        for (i = 0; i < overlap_size; i++)
+            search_buf[search_len++] = overlap[i];
+
+        if (!ReadFile(file, search_buf + search_len, (DWORD)(sizeof(search_buf) - overlap_size),
+                      &read_count, NULL)) {
+            CloseHandle(file);
+            return NULL;
+        }
+        if (read_count == 0)
+            break;
+
+        search_len += (unsigned int)read_count;
+
+        if (!found_gog &&
+            memmem_search(search_buf, search_len,
+                          EXPECT_PUSH_HOST_GOG, sizeof(EXPECT_PUSH_HOST_GOG)) >= 0)
+            found_gog = 1;
+        if (!found_retail &&
+            memmem_search(search_buf, search_len,
+                          EXPECT_PUSH_HOST_RETAIL, sizeof(EXPECT_PUSH_HOST_RETAIL)) >= 0)
+            found_retail = 1;
+        if (!found_dlc &&
+            memmem_search(search_buf, search_len,
+                          EXPECT_PUSH_HOST_DLC, sizeof(EXPECT_PUSH_HOST_DLC)) >= 0)
+            found_dlc = 1;
+
+        overlap_size = 0;
+        if (read_count >= 8) {
+            for (i = 0; i < 8; i++)
+                overlap[overlap_size++] = search_buf[search_len - 8 + i];
+        } else if (read_count > 0) {
+            for (i = 0; i < read_count; i++)
+                overlap[overlap_size++] = search_buf[search_len - (unsigned int)read_count + i];
+        }
+    }
+
+    CloseHandle(file);
+
+    if (found_retail) {
+        return &g_profiles[3];
+    }
+    if (found_dlc) {
+        return &g_profiles[4];
+    }
+    if (found_gog) {
+        for (i = 0; i < 3; i++) {
+            if (g_profiles[i].exe_size == file_size)
+                return &g_profiles[i];
+        }
+        return &g_profiles[0];
+    }
+
+    return NULL;
+}
+
 static const MedgeNetExeProfile *find_exe_profile(void)
 {
     char exe_path[MAX_PATH];
@@ -613,8 +712,8 @@ static const MedgeNetExeProfile *find_exe_profile(void)
         return size_match;
     }
 
-
-    return NULL;
+    /* SHA256 hash did not match - fall back to file pattern scanning */
+    return find_profile_by_pattern(exe_path);
 }
 
 static int verify_profile_anchors(const MedgeNetExeProfile *profile)
@@ -1623,9 +1722,6 @@ static void apply_patches(void)
                      profile->put_parse_branch_patch);
         }
     }
-
-    /* Patch 6b removed: the iVar2==4 check at 0x0165CE58 is needed.
-     * fcn.0165c4b0() returns 4 once the body is fully read. */
 
     /* Patch 7: NOP the busy-flag guard in GOSManager_SubmitTxn.
      *
